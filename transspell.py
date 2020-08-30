@@ -1,6 +1,7 @@
 import copy
 import torch
 from transformers import AutoModelWithLMHead, AutoTokenizer
+from nltk.corpus import stopwords
 
 
 class TransSpell:
@@ -11,6 +12,7 @@ class TransSpell:
     def __init__(self):
         self.tokenizer = AutoTokenizer.from_pretrained("distilbert-base-cased")
         self.model = AutoModelWithLMHead.from_pretrained("distilbert-base-cased")
+        self.stopwords = stopwords.words("english")
 
     def detect_errors(self, sequence: str) -> str:
         """
@@ -23,6 +25,9 @@ class TransSpell:
         temp_sent = sequence.split(" ")
         replacement_token = self.tokenizer.mask_token
         for i, token in enumerate(sequence.split(" ")):
+            # don't check stopwords and the first token of a sentence to reduce false positives
+            if i == 0 or token in self.stopwords:
+                continue
             sent = copy.deepcopy(temp_sent)
             sent[i] = replacement_token
             sent = " ".join(sent)
