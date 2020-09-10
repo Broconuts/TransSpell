@@ -34,7 +34,6 @@ class TransSpell:
         :param token: The word that is to be checked for being an error.
         :returns: True if token can be considered an error. False otherwise.
         """
-        token = self.clean_token(token)
         # load required components if they are not loaded yet
         if not self.dict_us:
             self.dict_us = enchant.Dict("en_US")
@@ -42,8 +41,11 @@ class TransSpell:
             self.dict_gb = enchant.Dict("en_GB")
         
         # step 1: check if token is long enough to be considered an error
-        if len(token) <= self.char_minimum:
+        if len(token) <= self.char_minimum or re.match(r"^[A-Z]{,4}\W?s?$", token):
             return False
+
+        # as capitalization is not relevant for the next steps, clean token for further processing
+        token = self.clean_token(token)
 
         # step 2: check token frequency in corpus (if possible) to see if it is rare enough
         if self.frequency_list:
@@ -67,25 +69,32 @@ class TransSpell:
         """
         # clean the sentence of excessive whitespaces; interpret them as commas
         sequence = re.sub("\s{2,}", ", ", sequence)
+        orig_sent = sequence.split(" ")  # all changes made by correction will be stored in this list
+        # if sequence is all-caps, make it all-lower as all-caps series cause issues with transformer
+        original_all_caps = sequence.isupper()
+        if original_all_caps:
+            sequence = sequence.lower()
         temp_sent = sequence.split(" ")
-        replacement_token = self.tokenizer.mask_token
         for i, token in enumerate(sequence.split(" ")):
             # don't check stopwords and the first token of a sentence to reduce false positives
-            if i == 0 or i == len(sequence.split(" ")) or token in self.stopwords:
+            if i == 0 or i == len(sequence.split(" ")) or token in self.stopwords or \
+               self.clean_token(token) in self.stopwords:
                 continue
             # use a copy of the original sentence to avoid an incorrectly changed token to affect the intended context
             sent = copy.deepcopy(temp_sent)
             if self.is_error(token):
-                sent[i] = replacement_token
+                sent[i] = self.tokenizer.mask_token  # mask token for which we want to generate suggestions
                 sent = " ".join(sent)
-                suggestions = self.generate_candidates(sent, topn=25)
+                suggestions = self.generate_candidates(sent, topn=50)
                 # if original token is contained in the list of results, consider it correct
                 if token in suggestions:
                     continue
                 correction = self.select_candidate(token, suggestions)
-                temp_sent[i] = correction
+                if original_all_caps:
+                    correction = correction.upper()
+                orig_sent[i] = correction
                 
-        return " ".join(temp_sent)
+        return " ".join(orig_sent)
 
     def select_candidate(self, original_token: str, candidates: list) -> str:
         """
@@ -105,7 +114,7 @@ class TransSpell:
         for candidate in candidates:
             candidate_edits[str(nltk.edit_distance(original_token, candidate))].append(candidate)
         # check for candidates within close edit distance
-        for i in range(0, 3):
+        for i in range(0, 4):
             if candidate_edits[str(i)]:
                 temp_candidates = list(candidate_edits[str(i)])
                 for candidate in temp_candidates:
@@ -117,8 +126,10 @@ class TransSpell:
         if suggestion:
             return suggestion
         # if no suggestion was found within edit distance, select the one deemed most likely by the model
+        elif candidate_ranking:
+            return candidate_ranking[0]
         else:
-            return candidates[0]
+            return original_token
 
     def generate_candidates(self, sequence: str, topn: int = 5) -> list:
         """
@@ -191,8 +202,11 @@ if __name__ == '__main__':
     #     correction = ts.correct_errors(sent)
     test_sents = ["WORKING WELL IS DOING A GREAT JOB WITH EFFICIENCY   ACCURACY   TIMELIBESS AND MEETING THE "
                   "EXPECTATION OF THE CUSTOMER",
+                  "working well is doing a great job with efficiency   accuracy   timelibess and meeting the "
+                  "expectation of the customers",
                   "I like the timeframe we use to deliver to our customers",
                   "CUSTOMER SATISFATION IS WELL I SUPPOSE",
+                  "customer satisfation is well i suppose",
                   "always find the ways to improve our servicec",
                   "Focusing for the Customers requirement and instructions and trying to meet their wants and needs "
                   "in its maximum possible way Implementing some good plans to eradicate the Errors and "
