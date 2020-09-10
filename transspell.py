@@ -3,6 +3,7 @@ import copy
 import collections
 import torch
 import enchant
+import nltk
 import pandas as pd
 from transformers import AutoModelWithLMHead, AutoTokenizer
 from nltk.corpus import stopwords
@@ -29,6 +30,7 @@ class TransSpell:
         """
         Uses a rule-based approach to evaluate whether a given token could be considered an error. This way of error
         detection is insensitive to context and will therefore only detect non-word errors.
+
         :param token: The word that is to be checked for being an error.
         :returns: True if token can be considered an error. False otherwise.
         """
@@ -68,27 +70,57 @@ class TransSpell:
             # don't check stopwords and the first token of a sentence to reduce false positives
             if i == 0 or token in self.stopwords:
                 continue
+            # use a copy of the original sentence to avoid an incorrectly changed token to affect the intended context
             sent = copy.deepcopy(temp_sent)
-            sent[i] = replacement_token
-            sent = " ".join(sent)
-            results = self.generate_candidates(sent, topn=25)
-            contained_in_suggestions = False
-            for j, suggestion in enumerate(results):
-                # decode suggestion
-                suggestion = self.tokenizer.decode([suggestion])
-                # overwrite code with string
-                results[j] = suggestion
-                if suggestion.lower() == token.lower():
-                    contained_in_suggestions = True
-                    break
-            if not contained_in_suggestions:
-                temp_sent[i] = results[0]
+            if self.is_error(token):
+                sent[i] = replacement_token
+                sent = " ".join(sent)
+                suggestions = self.generate_candidates(sent, topn=25)
+                # if original token is contained in the list of results, consider it correct
+                if token in suggestions:
+                    continue
+                correction = self.select_candidate(token, suggestions)
+                temp_sent[i] = correction
+                
         return " ".join(temp_sent)
+
+    def select_candidate(self, original_token: str, candidates: list) -> str:
+        """
+        Determines the most likely replacement from a list of transformer-generated candidates given the original token.
+        Prefers candidates with small Levenshtein distance to the original token and candidates with the same starting 
+        letter as the original token.
+        
+        :param original_token: The word that is to be replaced.
+        :param candidates: The list of candidates that could take the original_token's place given the sent context.
+        :returns: The token from the candidate list that is most likely the best replacement.
+        """        
+        # dict for storing suggestions and their edit-distance
+        candidate_edits = collections.defaultdict(list)
+        candidate_ranking = []
+        # sort candidates according to edit distance
+        for candidate in candidates:
+            candidate_edits[str(nltk.edit_distance(original_token, candidate))].append(candidate)
+        # check for candidates within close edit distance
+        for i in range(0, 3):
+            if candidate_edits[str(i)]:
+                temp_candidates = list(candidate_edits[str(i)])
+                for candidate in temp_candidates:
+                    candidate_ranking.append(candidate)
+        for candidate in candidate_ranking:
+            if candidate[0] == original_token[0]:
+                suggestion = candidate
+                break
+        if suggestion:
+            return suggestion
+        # if no suggestion was found within edit distance, select the one deemed most likely by the model
+        else:
+            return candidates[0]
 
     def generate_candidates(self, sequence: str, topn: int = 5) -> list:
         """
         Given a sequence with one masked token, generate a list of likely candidates for that token based on the
         context of the surrounding words.
+
         :param sequence: The input sentence with one masked word.
         :param topn: The amount of candidates that is to be supplied.
         :return: A list of candidates that could be in the masked position.
@@ -97,8 +129,14 @@ class TransSpell:
         mask_token_index = torch.where(input_str == self.tokenizer.mask_token_id)[1]
         token_logits = self.model(input_str)[0]
         mask_token_logits = token_logits[0, mask_token_index, :]
-
-        return torch.topk(mask_token_logits, topn, dim=1).indices[0].tolist()
+        results = torch.topk(mask_token_logits, topn, dim=1).indices[0].tolist()
+        for j, suggestion in enumerate(results):
+            # decode suggestion
+            suggestion = self.tokenizer.decode([suggestion])
+            # overwrite code with string
+            results[j] = suggestion
+        # return decoded candidates
+        return results
 
     def generate_frequency_list(self, path: str) -> None:
         """
@@ -142,7 +180,7 @@ class TransSpell:
 
 
 if __name__ == '__main__':
-    ts = TransSpell()
-    test_sent = "We made ensure to meet the customer requirements in a consistent manner."
+    ts = TransSpell(corpus_path="pnlp_data.csv")
+    test_sent = "There are thre possible answers to this question."
     results = ts.correct_errors(test_sent)
     print(results)
