@@ -4,6 +4,9 @@ import collections
 import torch
 import enchant
 import nltk
+import time
+import csv
+from tqdm import tqdm
 import pandas as pd
 from transformers import AutoTokenizer, AutoModelForMaskedLM
 from nltk.corpus import stopwords
@@ -46,6 +49,9 @@ class TransSpell:
 
         # as capitalization is not relevant for the next steps, clean token for further processing
         token = self.clean_token(token)
+        # if token consisted only of special characters that were removed, return false
+        if not token:
+            return False
 
         # step 2: check token frequency in corpus (if possible) to see if it is rare enough
         if self.frequency_list:
@@ -195,22 +201,17 @@ class TransSpell:
 
 
 if __name__ == '__main__':
+    start_time = time.time()
     ts = TransSpell(corpus_path="pnlp_data.csv")
-    # data = pd.read_csv("pnlp_data.csv", encoding="utf-8")
-    # sents = data["answers"]
-    # for sent in sents:
-    #     correction = ts.correct_errors(sent)
-    test_sents = ["WORKING WELL IS DOING A GREAT JOB WITH EFFICIENCY   ACCURACY   TIMELIBESS AND MEETING THE "
-                  "EXPECTATION OF THE CUSTOMER",
-                  "working well is doing a great job with efficiency   accuracy   timelibess and meeting the "
-                  "expectation of the customers",
-                  "I like the timeframe we use to deliver to our customers",
-                  "CUSTOMER SATISFATION IS WELL I SUPPOSE",
-                  "customer satisfation is well i suppose",
-                  "always find the ways to improve our servicec",
-                  "Focusing for the Customers requirement and instructions and trying to meet their wants and needs "
-                  "in its maximum possible way Implementing some good plans to eradicate the Errors and "
-                  "mis-declarations which will be leads to deliver in its best quality"]
-    for sent in test_sents:
-        result = ts.correct_errors(sent)
-        print(f"Actual sentence:\t{sent}\nCorrected sentence:\t{result}")
+    data = pd.read_csv("pnlp_data.csv", encoding="utf-8")
+    sents = data["answers"]
+    corrections = []
+    for sent in tqdm(sents):
+        corrections.append(ts.correct_errors(sent))
+    print(f"Processed {len(corrections)} answers in {(time.time() - start_time)/60} minutes.")
+    with open('results.csv', 'w', encoding="utf-8", newline='') as file:
+        writer = csv.writer(file, delimiter="\t")
+        writer.writerow(["original", "correction"])
+        for original, correction in zip(sents, corrections):
+            if re.sub("\s{2,}", ", ", original) != correction:
+                writer.writerow([original, correction])
