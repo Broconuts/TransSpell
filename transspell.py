@@ -5,7 +5,7 @@ import torch
 import enchant
 import nltk
 import pandas as pd
-from transformers import AutoModelWithLMHead, AutoTokenizer
+from transformers import AutoTokenizer, AutoModelForMaskedLM
 from nltk.corpus import stopwords
 
 
@@ -16,7 +16,7 @@ class TransSpell:
     """
     def __init__(self, minimum_token_length: int = 3, maximum_frequency: int = 10, corpus_path: str = None):
         self.tokenizer = AutoTokenizer.from_pretrained("distilbert-base-cased")
-        self.model = AutoModelWithLMHead.from_pretrained("distilbert-base-cased")
+        self.model = AutoModelForMaskedLM.from_pretrained("distilbert-base-cased")
         self.stopwords = stopwords.words("english")
         self.char_minimum = minimum_token_length
         self.frequency_maximum = maximum_frequency
@@ -51,7 +51,8 @@ class TransSpell:
                 return False
 
         # step 3: check whether token is contained in in English dictionaries (approximations of them)
-        if self.dict_us.check(token) or self.dict_gb.check(token):
+        if self.dict_us.check(token) or self.dict_us.check(token.capitalize()) or \
+            self.dict_gb.check(token) or self.dict_gb.check(token.capitalize()):
             return False
 
         return True
@@ -64,11 +65,13 @@ class TransSpell:
         :param sequence: The sentence that is to be checked for errors.
         :return: The input sequence, altered by replacing errors with their most likely suggestions.
         """
+        # clean the sentence of excessive whitespaces; interpret them as commas
+        sequence = re.sub("\s{2,}", ", ", sequence)
         temp_sent = sequence.split(" ")
         replacement_token = self.tokenizer.mask_token
         for i, token in enumerate(sequence.split(" ")):
             # don't check stopwords and the first token of a sentence to reduce false positives
-            if i == 0 or token in self.stopwords:
+            if i == 0 or i == len(sequence.split(" ")) or token in self.stopwords:
                 continue
             # use a copy of the original sentence to avoid an incorrectly changed token to affect the intended context
             sent = copy.deepcopy(temp_sent)
@@ -97,6 +100,7 @@ class TransSpell:
         # dict for storing suggestions and their edit-distance
         candidate_edits = collections.defaultdict(list)
         candidate_ranking = []
+        suggestion = None
         # sort candidates according to edit distance
         for candidate in candidates:
             candidate_edits[str(nltk.edit_distance(original_token, candidate))].append(candidate)
@@ -181,6 +185,18 @@ class TransSpell:
 
 if __name__ == '__main__':
     ts = TransSpell(corpus_path="pnlp_data.csv")
-    test_sent = "There are thre possible answers to this question."
-    results = ts.correct_errors(test_sent)
-    print(results)
+    # data = pd.read_csv("pnlp_data.csv", encoding="utf-8")
+    # sents = data["answers"]
+    # for sent in sents:
+    #     correction = ts.correct_errors(sent)
+    test_sents = ["WORKING WELL IS DOING A GREAT JOB WITH EFFICIENCY   ACCURACY   TIMELIBESS AND MEETING THE "
+                  "EXPECTATION OF THE CUSTOMER",
+                  "I like the timeframe we use to deliver to our customers",
+                  "CUSTOMER SATISFATION IS WELL I SUPPOSE",
+                  "always find the ways to improve our servicec",
+                  "Focusing for the Customers requirement and instructions and trying to meet their wants and needs "
+                  "in its maximum possible way Implementing some good plans to eradicate the Errors and "
+                  "mis-declarations which will be leads to deliver in its best quality"]
+    for sent in test_sents:
+        result = ts.correct_errors(sent)
+        print(f"Actual sentence:\t{sent}\nCorrected sentence:\t{result}")
